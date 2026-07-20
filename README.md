@@ -28,6 +28,10 @@ con recupero password (via email e/o tramite un amministratore).
   viene cancellata: chi altro usa lo stesso PC non trova ne' il contenuto
   ne' i nomi dei file. `protect`/`unprotect` offrono invece un livello piu'
   leggero (permessi del sistema operativo, nessun blocco/sblocco).
+- **Icona nella system tray** (`filesync tray`, opzionale): sync
+  automatica in background + blocco/sblocco vault dal menu con un click +
+  notifica se un vault resta sbloccato troppo a lungo. Vedi sezione
+  dedicata piu' sotto.
 - **Recupero password su tre livelli** (vedi sotto in dettaglio):
   1. la tua password personale (uso quotidiano);
   2. una chiave di recovery ricevuta una volta via email, per
@@ -45,9 +49,10 @@ con recupero password (via email e/o tramite un amministratore).
 pip install -r requirements.txt
 ```
 
-Richiede Python 3.9+. Nessuna dipendenza aggiuntiva per l'email o le
-chiavi master: usano solo `cryptography` (gia' richiesta) e la libreria
-standard di Python.
+Richiede Python 3.9+. Nessuna dipendenza aggiuntiva per l'email, le
+chiavi master o i vault: usano solo `cryptography` (gia' richiesta) e la
+libreria standard di Python. Solo la GUI a icona (`filesync tray`, vedi
+sotto) richiede pacchetti extra, in `requirements-tray.txt`.
 
 ## Uso rapido
 
@@ -305,6 +310,47 @@ Nota: ogni `lock` rigenera nomi casuali nuovi per tutti i blob (anche per
 i file non modificati), quindi la sync successiva ricarichera' l'intero
 vault invece che solo le differenze — un compromesso accettabile dato che
 di solito si blocca/sblocca poche volte al giorno, non in continuo.
+
+## Icona nella system tray (GUI)
+
+Per non dover lanciare i comandi a mano ogni volta, `filesync tray` mette
+un'icona nella barra delle applicazioni che:
+
+- sincronizza automaticamente i job in background (come `sync --watch`,
+  ma senza tenere un terminale aperto);
+- mostra nel menu i vault configurati con un'unica voce **Blocca/Sblocca**
+  per ciascuno — click, inserisci la password (o la legge da una
+  variabile d'ambiente se configurata), fatto;
+- avvisa con una notifica se un vault resta sbloccato per piu' di
+  `warn_after_minutes` (default 30), ripetendo il promemoria finche' non
+  lo blocchi — pensato esattamente per il caso "mi allontano dal PC e me
+  ne dimentico";
+- avvisa con una notifica anche in caso di errore di sincronizzazione.
+
+### Installazione e avvio
+
+```bash
+pip install -r requirements-tray.txt   # pystray + Pillow, non servono al resto di filesync
+python -m filesync tray -c config.yaml
+```
+
+Su Windows e macOS non serve altro (tkinter, usato per le finestre di
+richiesta password, e' incluso nell'installer ufficiale di Python). Su
+Linux con desktop minimale potrebbe servire anche il pacchetto di sistema
+`python3-tk`, e un ambiente con supporto system tray (su GNOME serve
+l'estensione AppIndicator/KStatusNotifierItem — senza un desktop grafico
+con tray, tipo una sessione SSH pura, non puo' funzionare).
+
+Per avviarla automaticamente all'accesso, aggiungila alle app di avvio di
+Windows (Esegui → `shell:startup`, crea un collegamento a
+`pythonw -m filesync tray -c C:\percorso\config.yaml`, usando `pythonw`
+invece di `python` per non aprire una finestra di console).
+
+**Nota**: la parte visiva (icona/menu/notifiche) e' stata scritta e
+documentata con cura ma non e' stata verificabile in questo ambiente di
+sviluppo (nessun display grafico disponibile) — la logica sottostante
+(quando sincronizzare, quando avvisare) e' invece coperta da test
+automatici. Provala sulla tua macchina e segnala eventuali problemi.
 
 ## Cifrare/decifrare una cartella "una tantum" (senza recovery)
 

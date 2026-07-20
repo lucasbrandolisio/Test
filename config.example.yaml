@@ -55,3 +55,14 @@ jobs:
     destination: "//SERVER/Backup/ProgettoVM"
     mirror: false
     encrypt: false
+
+# Vault locali (cartella di lavoro <-> cartella cifrata), usati da
+# 'filesync lock/unlock' e mostrati nel menu di 'filesync tray'.
+# Puoi aggiungere questa sezione anche in un config.yaml che non ha
+# affatto 'jobs:' se ti serve solo la protezione locale.
+vaults:
+  - name: "ProgettoPython"
+    workspace: "/home/utente/Progetti/ProgettoPython"
+    vault: "/home/utente/Progetti/ProgettoPython.vault"
+    password_env: "FILESYNC_VAULT_PW"   # opzionale: se assente, la tray chiede la password quando serve
+    warn_after_minutes: 30               # promemoria ripetuto se resta sbloccato troppo a lungo

@@ -37,6 +37,9 @@ def _run_one(job, dry_run: bool) -> bool:
 
 def cmd_sync(args: argparse.Namespace) -> int:
     jobs = load_jobs(args.config)
+    if not jobs:
+        print(f"Nessun job trovato in '{args.config}' (chiave 'jobs' mancante o vuota).", file=sys.stderr)
+        return 1
     if args.job:
         jobs = [j for j in jobs if j.name == args.job]
         if not jobs:
@@ -257,6 +260,14 @@ def cmd_unlock(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_tray(args: argparse.Namespace) -> int:
+    from . import tray as tray_module  # import lazy: pystray/Pillow servono solo qui
+
+    app = tray_module.TrayApp(args.config, interval=args.interval)
+    app.run()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="filesync", description="Sincronizzazione cartelle con cifratura opzionale.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Log dettagliato")
@@ -345,6 +356,15 @@ def build_parser() -> argparse.ArgumentParser:
     auth_group2.add_argument("--master-private-key", help="Usa la chiave master (solo amministratore)")
     p_unlock.add_argument("--master-passphrase", help="Passphrase della chiave master (se usi --master-private-key)")
     p_unlock.set_defaults(func=cmd_unlock)
+
+    p_tray = sub.add_parser(
+        "tray",
+        help="Avvia l'icona nella system tray: sync automatica in background + blocco/sblocco vault dal menu "
+             "(richiede 'pip install pystray Pillow')",
+    )
+    p_tray.add_argument("-c", "--config", required=True, help="Percorso del file config.yaml (jobs: e/o vaults:)")
+    p_tray.add_argument("--interval", type=int, default=300, help="Secondi tra un ciclo di sync automatico e l'altro (default 300)")
+    p_tray.set_defaults(func=cmd_tray)
 
     return parser
 

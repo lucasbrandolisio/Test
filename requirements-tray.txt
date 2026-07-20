@@ -1,0 +1,14 @@
+# Dipendenze extra SOLO per 'filesync tray' (icona nella system tray).
+# Il resto di filesync (sync, encrypt, lock/unlock, recover, protect...)
+# NON ne ha bisogno: installale solo se vuoi usare la GUI a icona.
+#
+#   pip install -r requirements.txt -r requirements-tray.txt
+#
+# Su Linux minimale potrebbe servire anche il pacchetto di sistema
+# 'python3-tk' (per le finestre di richiesta password) e un ambiente
+# desktop con supporto system tray (su GNOME serve l'estensione
+# AppIndicator/KStatusNotifierItem). Su Windows e macOS, tkinter e' gia'
+# incluso nell'installer ufficiale di Python.
+
+pystray>=0.19
+Pillow>=10.0

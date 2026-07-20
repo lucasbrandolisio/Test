@@ -42,13 +42,35 @@ class Job:
         return password
 
 
-def load_jobs(config_path: str) -> List[Job]:
-    with open(config_path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
+@dataclass
+class Vault:
+    name: str
+    workspace: str
+    vault: str
+    password_env: Optional[str] = None
+    warn_after_minutes: int = 30
 
+    def resolve_password(self) -> Optional[str]:
+        """Legge la password dalla variabile d'ambiente, se configurata.
+
+        Puo' essere None: in quel caso chi usa il vault (es. la tray app)
+        dovra' chiederla interattivamente.
+        """
+        if not self.password_env:
+            return None
+        return os.environ.get(self.password_env) or None
+
+
+def _read_yaml(config_path: str) -> dict:
+    with open(config_path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def load_jobs(config_path: str) -> List[Job]:
+    """Carica i job di sync da 'jobs:'. Ritorna una lista vuota se la chiave manca
+    (un config.yaml puo' contenere solo 'vaults:', vedi load_vaults)."""
+    raw = _read_yaml(config_path)
     jobs_raw = raw.get("jobs", [])
-    if not jobs_raw:
-        raise ValueError(f"Nessun job trovato in '{config_path}' (chiave 'jobs' mancante o vuota).")
 
     jobs = []
     for entry in jobs_raw:
@@ -70,3 +92,26 @@ def load_jobs(config_path: str) -> List[Job]:
             raise ValueError(f"Job malformato in '{config_path}': manca il campo {exc}.") from exc
 
     return jobs
+
+
+def load_vaults(config_path: str) -> List[Vault]:
+    """Carica i vault locali da 'vaults:'. Ritorna una lista vuota se la chiave manca."""
+    raw = _read_yaml(config_path)
+    vaults_raw = raw.get("vaults", [])
+
+    vaults = []
+    for entry in vaults_raw:
+        try:
+            vaults.append(
+                Vault(
+                    name=entry["name"],
+                    workspace=entry["workspace"],
+                    vault=entry["vault"],
+                    password_env=entry.get("password_env"),
+                    warn_after_minutes=entry.get("warn_after_minutes", 30),
+                )
+            )
+        except KeyError as exc:
+            raise ValueError(f"Vault malformato in '{config_path}': manca il campo {exc}.") from exc
+
+    return vaults
