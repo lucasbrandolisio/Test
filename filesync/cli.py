@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from cryptography.fernet import Fernet
 
-from . import crypto, envelope, keys
+from . import crypto, envelope, keys, protect as protect_module
 from .config import load_jobs
 from .sync import run_job
 
@@ -164,6 +164,37 @@ def cmd_open(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_protect(args: argparse.Namespace) -> int:
+    try:
+        if protect_module.is_windows():
+            protect_module.protect_windows(args.folder)
+            print(f"Accesso ristretto al solo utente corrente su '{args.folder}' (icacls).")
+        else:
+            count = protect_module.protect_posix(args.folder)
+            print(f"Permessi 'solo proprietario' applicati a {count} file in '{args.folder}'.")
+    except OSError as exc:
+        print(f"Errore: {exc}", file=sys.stderr)
+        return 1
+    print("NOTA: non e' cifratura, e' un controllo accessi del sistema operativo. "
+          "Un amministratore/root della macchina puo' comunque bypassarlo. "
+          "Usa 'filesync unprotect' per tornare ai permessi precedenti.")
+    return 0
+
+
+def cmd_unprotect(args: argparse.Namespace) -> int:
+    try:
+        if protect_module.is_windows():
+            protect_module.unprotect_windows(args.folder)
+            print(f"Permessi ereditati ripristinati per '{args.folder}'.")
+        else:
+            count = protect_module.unprotect_posix(args.folder)
+            print(f"Permessi originali ripristinati per {count} elementi in '{args.folder}'.")
+    except (FileNotFoundError, OSError) as exc:
+        print(f"Errore: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="filesync", description="Sincronizzazione cartelle con cifratura opzionale.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Log dettagliato")
@@ -220,6 +251,17 @@ def build_parser() -> argparse.ArgumentParser:
     auth_group.add_argument("--master-private-key", help="Usa la chiave master (solo amministratore)")
     p_open.add_argument("--master-passphrase", help="Passphrase della chiave master (se usi --master-private-key)")
     p_open.set_defaults(func=cmd_open)
+
+    p_protect = sub.add_parser(
+        "protect",
+        help="Blocca l'accesso a una cartella locale (source) ad altri utenti del sistema operativo",
+    )
+    p_protect.add_argument("folder", help="Cartella da proteggere (es. la source di un progetto)")
+    p_protect.set_defaults(func=cmd_protect)
+
+    p_unprotect = sub.add_parser("unprotect", help="Ripristina i permessi precedenti su una cartella protetta con 'protect'")
+    p_unprotect.add_argument("folder", help="Cartella da sbloccare")
+    p_unprotect.set_defaults(func=cmd_unprotect)
 
     return parser
 

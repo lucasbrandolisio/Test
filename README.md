@@ -213,6 +213,44 @@ python -m filesync open "//SERVER/Backup/PLC" ./PLC_recuperato \
   --master-private-key ./keys/master_private.pem
 ```
 
+## Proteggere ANCHE la cartella locale (source), non solo il backup
+
+Tutto quello visto finora protegge la **copia sul server** (`destination`):
+la cartella locale (`source`) resta un progetto normale in chiaro, perche'
+devi poterci lavorare con l'IDE/interprete Python senza attriti.
+
+Se pero' anche la cartella locale e' su una macchina/VM condivisa con altri
+(non solo tuo PC personale), e vuoi impedire che **altri account dello
+stesso sistema** possano leggere o modificare i sorgenti prima ancora che
+partano verso il server, usa:
+
+```bash
+python -m filesync protect ./MioProgettoPython     # blocca l'accesso ad altri utenti
+python -m filesync unprotect ./MioProgettoPython    # ripristina i permessi di prima
+```
+
+**Cosa fa davvero**: imposta i permessi del sistema operativo in modo che
+solo il tuo utente possa leggere/scrivere in quella cartella (su Linux:
+`chmod` proprietario-soltanto; su Windows: ACL via `icacls` limitata al
+tuo utente). Non serve "sbloccare" nulla per lavorarci: i file restano
+normali file in chiaro, editabili ed eseguibili subito.
+
+**Cosa NON fa**: non e' cifratura. Non impedisce a un amministratore/root
+della macchina di leggere comunque i file, e su alcune cartelle condivise
+VMware (mount `vmhgfs-fuse`) i permessi POSIX potrebbero non essere
+realmente applicati dall'host Windows — verificalo prima di fidartene su
+una cartella condivisa VM. Se ti serve protezione anche da un
+amministratore locale, l'unica soluzione reale e' la cifratura vista
+sopra, ma richiederebbe di "sbloccare/bloccare" la cartella ogni volta
+che ci lavori (un container cifrato tipo VeraCrypt/BitLocker) — se ti
+interessa questo livello, fammelo sapere e lo implementiamo come modalita'
+a parte.
+
+In sintesi, con `protect` + la cifratura della destinazione hai entrambe
+le cose richieste con lo stesso strumento: sorgente locale bloccata per
+gli altri utenti del sistema, backup sul server illeggibile senza
+password/chiave.
+
 ## Cifrare/decifrare una cartella "una tantum" (senza recovery)
 
 Per un uso manuale semplice, senza envelope/recovery/master, restano
