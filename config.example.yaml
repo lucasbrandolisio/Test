@@ -1,0 +1,32 @@
+# Esempio di configurazione per filesync.
+# Copia questo file in config.yaml e adattalo ai tuoi progetti.
+#
+# Ogni "job" definisce una coppia sorgente -> destinazione.
+# La destinazione puo' essere:
+#   - una cartella locale
+#   - un percorso di rete verso il server aziendale (es. \\SERVER\Backup\...)
+#   - una cartella condivisa VMware montata come percorso normale
+#     (es. su Linux guest: /mnt/hgfs/NomeCondivisione)
+#
+# Non mettere MAI la password in questo file: usa una variabile
+# d'ambiente (password_env) e impostala nel sistema operativo o
+# nello scheduler (Task Scheduler / cron) che lancia la sincronizzazione.
+
+jobs:
+  - name: "ProgettoPLC1"
+    source: "/home/utente/Progetti/PLC1"
+    destination: "//SERVER/Backup/PLC1"
+    mirror: false          # true = elimina in destinazione i file rimossi dalla sorgente
+    exclude:
+      - "*.tmp"
+      - "~$*"
+      - ".git"
+      - "__pycache__"
+    encrypt: false
+
+  - name: "ProgettoPLC2-VMwareShared"
+    source: "/mnt/hgfs/SharedVM/PLC2"
+    destination: "//SERVER/Backup/PLC2"
+    mirror: true
+    encrypt: true
+    password_env: "FILESYNC_PASSWORD"   # variabile d'ambiente con la password di cifratura
