@@ -18,6 +18,12 @@ con recupero password (via email e/o tramite un amministratore).
   spostati in `.filesync_trash/<data>/` dentro la destinazione: restano
   sempre recuperabili. Puoi quindi ripristinare l'intero backup dal
   server anche se il tuo PC si rompe.
+- **Versioni storiche dei file modificati** (`keep_versions`, default 5):
+  prima di sovrascrivere un file cambiato in destinazione, la versione
+  precedente viene conservata. Protegge da ransomware: se un malware
+  cifra/corrompe i file in locale, la sync propaga inevitabilmente anche
+  quella versione, ma le versioni buone precedenti restano recuperabili
+  con `filesync versions`/`restore-version`. Vedi la sezione dedicata.
 - **Modalita' watch**: gira in loop e sincronizza automaticamente ad
   intervalli regolari.
 - **Cifratura delle cartelle** (AES via `cryptography.Fernet`) cosi' chi
@@ -101,6 +107,57 @@ basta copiarli. Per i job **cifrati**, usa:
 ```bash
 python -m filesync open "//SERVER/Backup/PLC" ./PLC_ripristinato --password "la-tua-password"
 ```
+
+## Protezione da ransomware: versioni storiche dei file
+
+**Limite onesto da capire prima**: filesync da solo NON blocca un
+ransomware. Se un malware infetta il PC locale e cifra/corrompe i tuoi
+file in-place (stesso nome, contenuto compromesso), la prossima sync vede
+"il file e' cambiato" e lo ricopia sul server — **sovrascrivendo l'ultima
+copia buona con quella gia' compromessa**. Nessun tool di sync puro puo'
+evitarlo del tutto: il PC che sincronizza ha per forza accesso in
+scrittura alla destinazione.
+
+Quello che filesync PUO' fare, e fa di default, e' tenere una **cronologia
+delle versioni precedenti**, cosi' anche se l'ultima sync propaga il
+danno, le versioni buone di prima restano recuperabili:
+
+```yaml
+jobs:
+  - name: "PLC"
+    ...
+    keep_versions: 5   # default gia' 5; 0 disattiva lo storico
+```
+
+Prima di sovrascrivere un file cambiato, la versione precedente finisce in
+`<destinazione>/.filesync_versions/<percorso>/<timestamp>`, tenendo solo
+le ultime `keep_versions` per file (le piu' vecchie vengono scartate
+automaticamente). Per vedere ed recuperare una versione:
+
+```bash
+python -m filesync versions "//SERVER/Backup/PLC" main.st
+# elenca i timestamp disponibili, es. 20260718-091500, 20260719-140212, ...
+
+python -m filesync restore-version "//SERVER/Backup/PLC" main.st 20260718-091500 ./recuperato.st
+```
+
+Per un file di un job **cifrato**, usa lo stesso percorso con `.enc` e
+passa la password/chiave di recovery/chiave master come per `open`:
+
+```bash
+python -m filesync restore-version "//SERVER/Backup/PLC" main.st.enc 20260718-091500 ./recuperato.st --password "..."
+```
+
+**Quanto ti protegge davvero**: se il ransomware agisce e viene notato
+entro poche sincronizzazioni, hai le versioni buone precedenti a
+disposizione. Se il ransomware resta silente per settimane prima di
+agire (tattica comune), `keep_versions: 5` potrebbe non bastare — alza il
+numero (a costo di piu' spazio disco) se ti preoccupa questo scenario. Per
+una protezione seria servono anche misure lato server che questo tool non
+puo' sostituire: snapshot immutabili (Volume Shadow Copy di Windows,
+snapshot ZFS/BTRFS o del tuo NAS), un account di scrittura dedicato al
+backup con permessi il piu' possibile limitati, e idealmente una copia
+offline/air-gapped periodica.
 
 ## Cifratura: password personale, recovery via email, chiave master
 

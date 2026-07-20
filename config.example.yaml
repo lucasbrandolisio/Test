@@ -26,6 +26,7 @@ jobs:
     source: "/home/utente/Progetti/PLC"
     destination: "//SERVER/Backup/PLC"
     mirror: false
+    keep_versions: 5   # tiene le ultime 5 versioni di ogni file modificato (protezione da ransomware, default gia' 5)
     exclude:
       - "*.tmp"
       - "~$*"

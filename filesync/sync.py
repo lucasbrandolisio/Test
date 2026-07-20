@@ -28,10 +28,11 @@ logger = logging.getLogger("filesync.sync")
 
 META_SUFFIX = ".meta.json"
 TRASH_DIR = ".filesync_trash"
+VERSIONS_DIR = ".filesync_versions"
 
 # Cartelle "tecniche" dentro la destinazione che la sync non deve mai
 # considerare file dell'utente ne' toccare durante la pulizia mirror.
-RESERVED_DEST_DIRS = {TRASH_DIR, envelope.ENVELOPE_DIR}
+RESERVED_DEST_DIRS = {TRASH_DIR, VERSIONS_DIR, envelope.ENVELOPE_DIR}
 
 
 @dataclass
@@ -78,6 +79,7 @@ def sync_directory(
     exclude: Optional[List[str]] = None,
     cipher=None,
     dry_run: bool = False,
+    keep_versions: int = 0,
 ) -> SyncResult:
     """Sincronizza source -> destination.
 
@@ -91,6 +93,13 @@ def sync_directory(
       destinazione con suffisso '.enc' e viene mantenuto un piccolo sidecar
       '.meta.json' con dimensione/mtime originali, usato per rilevare le
       modifiche senza dover decifrare nulla.
+    - Se keep_versions > 0, prima di SOVRASCRIVERE un file esistente in
+      destinazione (perche' e' cambiato in sorgente) la versione precedente
+      viene salvata in '<destination>/.filesync_versions/<percorso>/<timestamp>',
+      tenendo solo le ultime 'keep_versions' per file. Protegge dal caso in
+      cui un ransomware cifri/corrompa i file in locale: la sync propaga
+      comunque la versione compromessa, ma quelle buone precedenti restano
+      recuperabili con 'filesync versions'/'restore-version'.
     """
     exclude = exclude or []
     result = SyncResult()
@@ -99,6 +108,7 @@ def sync_directory(
         raise FileNotFoundError(f"Cartella sorgente non trovata: {source}")
 
     os.makedirs(destination, exist_ok=True)
+    run_ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
     expected_dest_files = set()
 
@@ -125,6 +135,9 @@ def sync_directory(
 
             if needs_copy:
                 if not dry_run:
+                    if keep_versions > 0 and os.path.exists(dest_path):
+                        _save_version(destination, dest_rel, dest_path, run_ts)
+                        _prune_versions(destination, dest_rel, keep_versions)
                     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                     with open(src_path, "rb") as f:
                         plaintext = f.read()
@@ -149,6 +162,9 @@ def sync_directory(
 
             if needs_copy:
                 if not dry_run:
+                    if keep_versions > 0 and os.path.exists(dest_path):
+                        _save_version(destination, rel_path, dest_path, run_ts)
+                        _prune_versions(destination, rel_path, keep_versions)
                     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                     shutil.copy2(src_path, dest_path)
                 result.copied.append(rel_path)
@@ -157,7 +173,6 @@ def sync_directory(
 
     if mirror:
         expected_norm = {p.replace(os.sep, "/") for p in expected_dest_files}
-        run_ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
         for dirpath, dirnames, filenames in os.walk(destination):
             rel_dir = os.path.relpath(dirpath, destination)
@@ -184,6 +199,58 @@ def _move_to_trash(destination: str, rel_path: str, run_ts: str) -> None:
     dst = os.path.join(destination, TRASH_DIR, run_ts, rel_path)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     shutil.move(src, dst)
+
+
+def _version_dir(destination: str, rel_path: str) -> str:
+    return os.path.join(destination, VERSIONS_DIR, rel_path)
+
+
+def _save_version(destination: str, rel_path: str, current_path: str, run_ts: str) -> None:
+    """Salva una copia del file ATTUALE (prima di sovrascriverlo) come nuova versione storica."""
+    version_dir = _version_dir(destination, rel_path)
+    os.makedirs(version_dir, exist_ok=True)
+    shutil.copy2(current_path, os.path.join(version_dir, run_ts))
+
+
+def _prune_versions(destination: str, rel_path: str, keep: int) -> None:
+    version_dir = _version_dir(destination, rel_path)
+    if not os.path.isdir(version_dir):
+        return
+    versions = sorted(os.listdir(version_dir))  # i nomi sono timestamp "AAAAMMGG-hhmmss", ordinabili come stringhe
+    for old in versions[:-keep] if keep > 0 else versions:
+        os.remove(os.path.join(version_dir, old))
+    if not os.listdir(version_dir):
+        os.rmdir(version_dir)
+
+
+def list_versions(destination: str, rel_path: str) -> List[str]:
+    """Ritorna i timestamp delle versioni storiche disponibili per un file (piu' vecchia -> piu' recente)."""
+    version_dir = _version_dir(destination, rel_path)
+    if not os.path.isdir(version_dir):
+        return []
+    return sorted(os.listdir(version_dir))
+
+
+def restore_version(destination: str, rel_path: str, version_ts: str, output_path: str, cipher=None) -> None:
+    """Ripristina una versione storica di un file in output_path.
+
+    Se il file era cifrato (rel_path finisce per '.enc'), passa il cipher
+    (vedi envelope.py) per decifrarla; altrimenti None per una copia diretta.
+    """
+    version_path = os.path.join(_version_dir(destination, rel_path), version_ts)
+    if not os.path.exists(version_path):
+        raise FileNotFoundError(f"Versione '{version_ts}' non trovata per '{rel_path}' in '{destination}'.")
+
+    with open(version_path, "rb") as f:
+        data = f.read()
+    if cipher is not None:
+        data = crypto.decrypt_bytes(cipher, data)
+
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    with open(output_path, "wb") as f:
+        f.write(data)
 
 
 def _prune_empty_dirs(root: str) -> None:
@@ -243,6 +310,7 @@ def run_job(job: Job, dry_run: bool = False) -> SyncResult:
         exclude=job.exclude,
         cipher=cipher,
         dry_run=dry_run,
+        keep_versions=job.keep_versions,
     )
     logger.info(
         "Job '%s': %d copiati, %d archiviati nel cestino, %d invariati",

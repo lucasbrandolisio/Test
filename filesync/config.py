@@ -20,6 +20,7 @@ class Job:
     password_env: Optional[str] = None
     master_public_key: Optional[str] = None
     recovery_email: Optional[str] = None
+    keep_versions: int = 5
 
     def resolve_password(self) -> Optional[str]:
         """Legge la password di cifratura da una variabile d'ambiente.
@@ -86,6 +87,7 @@ def load_jobs(config_path: str) -> List[Job]:
                     password_env=entry.get("password_env"),
                     master_public_key=entry.get("master_public_key"),
                     recovery_email=entry.get("recovery_email"),
+                    keep_versions=entry.get("keep_versions", 5),
                 )
             )
         except KeyError as exc:

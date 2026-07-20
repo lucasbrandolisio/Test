@@ -14,6 +14,7 @@ from cryptography.fernet import Fernet
 
 from . import crypto, envelope, keys, mailer, vault
 from . import protect as protect_module
+from . import sync as sync_module
 from .config import load_jobs
 from .sync import run_job
 
@@ -260,6 +261,45 @@ def cmd_unlock(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_versions(args: argparse.Namespace) -> int:
+    versions = sync_module.list_versions(args.destination, args.rel_path)
+    if not versions:
+        print(f"Nessuna versione storica trovata per '{args.rel_path}' in '{args.destination}'.")
+        return 0
+    for v in versions:
+        print(v)
+    return 0
+
+
+def cmd_restore_version(args: argparse.Namespace) -> int:
+    is_encrypted = args.rel_path.endswith(crypto.ENCRYPTED_SUFFIX)
+    cipher = None
+
+    if is_encrypted:
+        try:
+            if args.recovery_key:
+                dek = envelope.unwrap_dek_with_recovery_key(args.destination, args.recovery_key)
+            elif args.master_private_key:
+                passphrase = args.master_passphrase or getpass.getpass("Passphrase della chiave master: ")
+                dek = envelope.unwrap_dek_with_master_key(args.destination, args.master_private_key, passphrase)
+            else:
+                password = args.password or getpass.getpass("Password personale: ")
+                dek = envelope.unwrap_dek_with_password(args.destination, password)
+        except (crypto.DecryptionError, FileNotFoundError) as exc:
+            print(f"Errore: {exc}", file=sys.stderr)
+            return 1
+        cipher = Fernet(dek)
+
+    try:
+        sync_module.restore_version(args.destination, args.rel_path, args.version, args.output, cipher=cipher)
+    except FileNotFoundError as exc:
+        print(f"Errore: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Versione '{args.version}' di '{args.rel_path}' ripristinata in '{args.output}'.")
+    return 0
+
+
 def cmd_tray(args: argparse.Namespace) -> int:
     from . import tray as tray_module  # import lazy: pystray/Pillow servono solo qui
 
@@ -365,6 +405,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_tray.add_argument("-c", "--config", required=True, help="Percorso del file config.yaml (jobs: e/o vaults:)")
     p_tray.add_argument("--interval", type=int, default=300, help="Secondi tra un ciclo di sync automatico e l'altro (default 300)")
     p_tray.set_defaults(func=cmd_tray)
+
+    p_versions = sub.add_parser(
+        "versions",
+        help="Elenca le versioni storiche salvate di un file nel backup (protezione da ransomware/errori)",
+    )
+    p_versions.add_argument("destination", help="Cartella di destinazione del job")
+    p_versions.add_argument("rel_path", help="Percorso relativo del file cosi' come appare in destinazione (aggiungi '.enc' se il job e' cifrato)")
+    p_versions.set_defaults(func=cmd_versions)
+
+    p_restore_version = sub.add_parser(
+        "restore-version",
+        help="Ripristina una versione storica precedente di un file (es. dopo che il file corrente e' stato corrotto da un ransomware)",
+    )
+    p_restore_version.add_argument("destination", help="Cartella di destinazione del job")
+    p_restore_version.add_argument("rel_path", help="Percorso relativo del file (con '.enc' se cifrato)")
+    p_restore_version.add_argument("version", help="Timestamp della versione (vedi 'filesync versions')")
+    p_restore_version.add_argument("output", help="File dove scrivere la versione ripristinata")
+    auth_group3 = p_restore_version.add_mutually_exclusive_group()
+    auth_group3.add_argument("--password", help="Password personale (solo se il file e' cifrato)")
+    auth_group3.add_argument("--recovery-key", help="Chiave di recovery (solo se il file e' cifrato)")
+    auth_group3.add_argument("--master-private-key", help="Chiave master, solo amministratore (solo se il file e' cifrato)")
+    p_restore_version.add_argument("--master-passphrase", help="Passphrase della chiave master")
+    p_restore_version.set_defaults(func=cmd_restore_version)
 
     return parser
 
