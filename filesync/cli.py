@@ -12,7 +12,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from cryptography.fernet import Fernet
 
-from . import crypto, envelope, keys, protect as protect_module
+from . import crypto, envelope, keys, mailer, vault
+from . import protect as protect_module
 from .config import load_jobs
 from .sync import run_job
 
@@ -195,6 +196,67 @@ def cmd_unprotect(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_lock(args: argparse.Namespace) -> int:
+    password = args.password or getpass.getpass("Password del vault: ")
+    if not args.password:
+        confirm = getpass.getpass("Conferma password: ")
+        if confirm != password:
+            print("Le password non coincidono.", file=sys.stderr)
+            return 1
+
+    first_time = not envelope.envelope_exists(args.vault)
+    recovery_key = keys.generate_recovery_key() if (first_time and args.recovery_email) else None
+
+    try:
+        count = vault.lock(
+            args.workspace,
+            args.vault,
+            password,
+            master_public_key_path=args.master_public_key,
+            recovery_key=recovery_key,
+        )
+    except (FileNotFoundError, RuntimeError, crypto.DecryptionError) as exc:
+        print(f"Errore: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Bloccati {count} file: '{args.workspace}' e' stata cancellata, il contenuto esiste solo cifrato in '{args.vault}'.")
+
+    if recovery_key and args.recovery_email:
+        try:
+            mailer.send_recovery_email(args.recovery_email, os.path.basename(args.vault.rstrip(os.sep)), args.vault, recovery_key)
+            print(f"Chiave di recovery inviata a {args.recovery_email}.")
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"ATTENZIONE: invio email fallito ({exc}). CONSERVA SUBITO questa chiave, non verra' rigenerata: {recovery_key}",
+                file=sys.stderr,
+            )
+    return 0
+
+
+def cmd_unlock(args: argparse.Namespace) -> int:
+    try:
+        if args.recovery_key:
+            dek = envelope.unwrap_dek_with_recovery_key(args.vault, args.recovery_key)
+        elif args.master_private_key:
+            passphrase = args.master_passphrase or getpass.getpass("Passphrase della chiave master: ")
+            dek = envelope.unwrap_dek_with_master_key(args.vault, args.master_private_key, passphrase)
+        else:
+            password = args.password or getpass.getpass("Password del vault: ")
+            dek = envelope.unwrap_dek_with_password(args.vault, password)
+    except (crypto.DecryptionError, FileNotFoundError) as exc:
+        print(f"Errore: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        count = vault.unlock(args.vault, args.workspace, dek)
+    except (FileNotFoundError, FileExistsError) as exc:
+        print(f"Errore: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Sbloccati {count} file in '{args.workspace}'. Ricorda 'filesync lock' quando hai finito di lavorarci.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="filesync", description="Sincronizzazione cartelle con cifratura opzionale.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Log dettagliato")
@@ -262,6 +324,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_unprotect = sub.add_parser("unprotect", help="Ripristina i permessi precedenti su una cartella protetta con 'protect'")
     p_unprotect.add_argument("folder", help="Cartella da sbloccare")
     p_unprotect.set_defaults(func=cmd_unprotect)
+
+    p_lock = sub.add_parser(
+        "lock",
+        help="Cifra la cartella di lavoro in un vault e CANCELLA i file in chiaro (chiudi prima IDE/TIA Portal!)",
+    )
+    p_lock.add_argument("workspace", help="Cartella di lavoro in chiaro da bloccare")
+    p_lock.add_argument("vault", help="Cartella vault dove finisce il contenuto cifrato")
+    p_lock.add_argument("--password", help="Password del vault (se omessa viene richiesta in modo sicuro)")
+    p_lock.add_argument("--master-public-key", help="Chiave pubblica master (permette il recupero da parte dell'amministratore)")
+    p_lock.add_argument("--recovery-email", help="Email a cui mandare la chiave di recovery (solo alla prima creazione del vault)")
+    p_lock.set_defaults(func=cmd_lock)
+
+    p_unlock = sub.add_parser("unlock", help="Decifra un vault nella cartella di lavoro, pronta per l'IDE")
+    p_unlock.add_argument("vault", help="Cartella vault cifrata")
+    p_unlock.add_argument("workspace", help="Cartella di lavoro da ricreare in chiaro (deve non esistere o essere vuota)")
+    auth_group2 = p_unlock.add_mutually_exclusive_group()
+    auth_group2.add_argument("--password", help="Password del vault (default: la richiede in modo sicuro)")
+    auth_group2.add_argument("--recovery-key", help="Usa la chiave di recovery ricevuta via email")
+    auth_group2.add_argument("--master-private-key", help="Usa la chiave master (solo amministratore)")
+    p_unlock.add_argument("--master-passphrase", help="Passphrase della chiave master (se usi --master-private-key)")
+    p_unlock.set_defaults(func=cmd_unlock)
 
     return parser
 

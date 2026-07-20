@@ -22,6 +22,12 @@ con recupero password (via email e/o tramite un amministratore).
   intervalli regolari.
 - **Cifratura delle cartelle** (AES via `cryptography.Fernet`) cosi' chi
   ha accesso al server non puo' leggere il codice sorgente.
+- **Vault locale (`lock`/`unlock`)**: protegge anche la cartella dove
+  lavori, non solo il backup. Quando chiudi l'IDE/TIA Portal e blocchi il
+  vault, i file (nomi compresi) vengono cifrati e la cartella in chiaro
+  viene cancellata: chi altro usa lo stesso PC non trova ne' il contenuto
+  ne' i nomi dei file. `protect`/`unprotect` offrono invece un livello piu'
+  leggero (permessi del sistema operativo, nessun blocco/sblocco).
 - **Recupero password su tre livelli** (vedi sotto in dettaglio):
   1. la tua password personale (uso quotidiano);
   2. una chiave di recovery ricevuta una volta via email, per
@@ -215,41 +221,90 @@ python -m filesync open "//SERVER/Backup/PLC" ./PLC_recuperato \
 
 ## Proteggere ANCHE la cartella locale (source), non solo il backup
 
-Tutto quello visto finora protegge la **copia sul server** (`destination`):
-la cartella locale (`source`) resta un progetto normale in chiaro, perche'
-devi poterci lavorare con l'IDE/interprete Python senza attriti.
+Ci sono due livelli, a seconda di chi puo' accedere al tuo computer.
 
-Se pero' anche la cartella locale e' su una macchina/VM condivisa con altri
-(non solo tuo PC personale), e vuoi impedire che **altri account dello
-stesso sistema** possano leggere o modificare i sorgenti prima ancora che
-partano verso il server, usa:
+### Livello 1 — `protect`: altri utenti dello stesso sistema operativo
 
 ```bash
 python -m filesync protect ./MioProgettoPython     # blocca l'accesso ad altri utenti
 python -m filesync unprotect ./MioProgettoPython    # ripristina i permessi di prima
 ```
 
-**Cosa fa davvero**: imposta i permessi del sistema operativo in modo che
-solo il tuo utente possa leggere/scrivere in quella cartella (su Linux:
-`chmod` proprietario-soltanto; su Windows: ACL via `icacls` limitata al
-tuo utente). Non serve "sbloccare" nulla per lavorarci: i file restano
-normali file in chiaro, editabili ed eseguibili subito.
+Imposta i permessi del sistema operativo (chmod proprietario-soltanto su
+Linux, ACL via `icacls` su Windows). Comodo perche' non serve "sbloccare"
+nulla per lavorarci. **Ma non impedisce a un amministratore/root della
+stessa macchina di leggere comunque i file** — se il PC puo' essere usato
+anche da colleghi con un loro account (o con accesso admin), questo livello
+non basta.
 
-**Cosa NON fa**: non e' cifratura. Non impedisce a un amministratore/root
-della macchina di leggere comunque i file, e su alcune cartelle condivise
-VMware (mount `vmhgfs-fuse`) i permessi POSIX potrebbero non essere
-realmente applicati dall'host Windows — verificalo prima di fidartene su
-una cartella condivisa VM. Se ti serve protezione anche da un
-amministratore locale, l'unica soluzione reale e' la cifratura vista
-sopra, ma richiederebbe di "sbloccare/bloccare" la cartella ogni volta
-che ci lavori (un container cifrato tipo VeraCrypt/BitLocker) — se ti
-interessa questo livello, fammelo sapere e lo implementiamo come modalita'
-a parte.
+### Livello 2 — `lock`/`unlock`: vault cifrato, protezione reale
 
-In sintesi, con `protect` + la cifratura della destinazione hai entrambe
-le cose richieste con lo stesso strumento: sorgente locale bloccata per
-gli altri utenti del sistema, backup sul server illeggibile senza
-password/chiave.
+Se il computer puo' essere preso in mano da altri colleghi, l'unico modo
+per essere sicuri che **nessuno** possa aprire i tuoi `.py` (o vedere
+anche solo che file ci sono) e' non lasciarli mai in chiaro sul disco
+quando non ci stai lavorando. Per questo esiste il vault:
+
+```bash
+# 1. lavori normalmente su ./MioProgetto con VS Code / TIA Portal
+# 2. quando hai finito (o ti allontani dal PC):
+#    CHIUDI PRIMA l'editor/TIA Portal, poi:
+python -m filesync lock ./MioProgetto ./MioProgetto.vault --password "una-password-lunga"
+```
+
+Cosa succede: ogni file viene cifrato con un nome casuale (nessuna traccia
+del nome o della struttura originale) dentro `MioProgetto.vault`, e solo
+DOPO aver verificato che tutto ridecifra correttamente, `./MioProgetto`
+viene **cancellata per davvero**. A quel punto un collega che apre quella
+cartella non trova assolutamente nulla — non esiste piu' — e se apre
+`MioProgetto.vault` trova solo file con nomi tipo `9f2a...blob`, contenuto
+illeggibile, nessun `.py` visibile.
+
+Quando vuoi tornare a lavorarci:
+
+```bash
+python -m filesync unlock ./MioProgetto.vault ./MioProgetto --password "una-password-lunga"
+# ...apri VS Code / TIA Portal, lavori...
+# poi richiudi l'editor e rilancia 'lock'
+```
+
+Anche qui vale il sistema di recupero password a tre livelli (vedi sopra):
+puoi passare `--recovery-email` e/o `--master-public-key` a `lock` la
+prima volta che crei un vault, cosi' se dimentichi la password (o vuoi
+poter recuperare i vault dei colleghi come amministratore) non perdi
+l'accesso:
+
+```bash
+python -m filesync lock ./MioProgetto ./MioProgetto.vault \
+  --recovery-email "tu@azienda.it" \
+  --master-public-key ./keys/master_public.pem
+```
+
+**Compromesso da accettare**: mentre il vault e' sbloccato (mentre ci
+lavori con l'editor aperto), i file sono in chiaro sul disco come sempre
+— e' inevitabile, un IDE deve poter leggere file veri. La protezione vale
+per il tempo in cui NON stai lavorando (PC lasciato incustodito, spento,
+prestato). Per la massima sicurezza anche mentre lavori, puoi combinare i
+due livelli: `protect` sulla cartella sbloccata mentre e' aperta.
+
+### Backup sul server: il vault e' gia' pronto per la sync
+
+Il vault e' gia' cifrato: per fare il backup sul server basta un job di
+sync **senza** `encrypt: true`, con `source` uguale alla cartella vault —
+i file vengono copiati cosi' come sono, gia' illeggibili:
+
+```yaml
+jobs:
+  - name: "MioProgetto-vault"
+    source: "./MioProgetto.vault"
+    destination: "//SERVER/Backup/MioProgetto"
+    mirror: false
+    encrypt: false   # non serve: il contenuto e' gia' cifrato dal vault
+```
+
+Nota: ogni `lock` rigenera nomi casuali nuovi per tutti i blob (anche per
+i file non modificati), quindi la sync successiva ricarichera' l'intero
+vault invece che solo le differenze — un compromesso accettabile dato che
+di solito si blocca/sblocca poche volte al giorno, non in continuo.
 
 ## Cifrare/decifrare una cartella "una tantum" (senza recovery)
 
