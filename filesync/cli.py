@@ -308,6 +308,28 @@ def cmd_tray(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_setup(args: argparse.Namespace) -> int:
+    try:
+        from . import setup_gui  # import lazy: tkinter servono solo qui
+    except ImportError:
+        print(
+            "Manca Tkinter, richiesto dalla finestra di configurazione.\n"
+            "Su Windows/macOS e' incluso nell'installer ufficiale di Python "
+            "(reinstalla Python selezionando 'tcl/tk and IDLE'); su Linux minimale "
+            "installa il pacchetto di sistema 'python3-tk'.",
+            file=sys.stderr,
+        )
+        return 1
+
+    setup_gui.ensure_config_exists(args.config)
+    try:
+        setup_gui.open_manage_window(args.config)
+    except Exception as exc:  # noqa: BLE001 - su una sessione senza display Tk fallisce qui, non all'import
+        print(f"Impossibile aprire la finestra di configurazione: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="filesync", description="Sincronizzazione cartelle con cifratura opzionale.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Log dettagliato")
@@ -428,6 +450,13 @@ def build_parser() -> argparse.ArgumentParser:
     auth_group3.add_argument("--master-private-key", help="Chiave master, solo amministratore (solo se il file e' cifrato)")
     p_restore_version.add_argument("--master-passphrase", help="Passphrase della chiave master")
     p_restore_version.set_defaults(func=cmd_restore_version)
+
+    p_setup = sub.add_parser(
+        "setup",
+        help="Apre la finestra di configurazione visuale (aggiungi/rimuovi progetti scegliendo le cartelle, senza editare YAML)",
+    )
+    p_setup.add_argument("-c", "--config", required=True, help="Percorso del file config.yaml (creato se non esiste)")
+    p_setup.set_defaults(func=cmd_setup)
 
     return parser
 

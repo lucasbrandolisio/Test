@@ -179,6 +179,23 @@ class TrayApp:
 
             self._stop.wait(self.interval)
 
+    def manage_projects(self, icon=None, item=None):
+        try:
+            from . import setup_gui  # import lazy: tkinter servono solo qui
+        except ImportError:
+            self._notify(
+                "Manca Tkinter per la finestra di configurazione. Su Linux minimale "
+                "installa il pacchetto di sistema 'python3-tk'.",
+                title="filesync - errore",
+            )
+            return
+
+        setup_gui.ensure_config_exists(self.config_path)
+        try:
+            setup_gui.open_manage_window(self.config_path)
+        except Exception:  # noqa: BLE001
+            logger.exception("Errore nella finestra di configurazione.")
+
     def _menu_items(self):
         yield self._pystray.MenuItem("Sincronizza ora", self.sync_now)
         vaults = self._safe_load_vaults()
@@ -187,6 +204,8 @@ class TrayApp:
             for entry in vaults:
                 label = f"Blocca '{entry.name}'" if is_workspace_unlocked(entry) else f"Sblocca '{entry.name}'"
                 yield self._pystray.MenuItem(label, lambda icon, item, e=entry: self.toggle_vault(e))
+        yield self._pystray.Menu.SEPARATOR
+        yield self._pystray.MenuItem("Gestisci progetti...", self.manage_projects)
         yield self._pystray.Menu.SEPARATOR
         yield self._pystray.MenuItem("Esci", self._quit)
 
@@ -197,6 +216,11 @@ class TrayApp:
     def run(self):
         pystray, Image, ImageDraw = _import_ui_deps()
         self._pystray, self._Image, self._ImageDraw = pystray, Image, ImageDraw
+
+        if not self._safe_load_jobs() and not self._safe_load_vaults():
+            # primo avvio, o config vuoto: apri subito la configurazione
+            # visuale invece di lasciare un'icona senza nulla da fare.
+            self.manage_projects()
 
         self._icon = pystray.Icon(
             "filesync",

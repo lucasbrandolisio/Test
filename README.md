@@ -34,6 +34,12 @@ con recupero password (via email e/o tramite un amministratore).
   viene cancellata: chi altro usa lo stesso PC non trova ne' il contenuto
   ne' i nomi dei file. `protect`/`unprotect` offrono invece un livello piu'
   leggero (permessi del sistema operativo, nessun blocco/sblocco).
+- **Configurazione visuale** (`filesync setup` / `filesync tray`,
+  opzionale): aggiungi/rimuovi progetti scegliendo le cartelle da una
+  finestra ("Sfoglia..."), senza mai editare `config.yaml` a mano; le
+  password finiscono nel gestore credenziali del sistema operativo, non
+  in un file. Pensato per essere installato su piu' PC di colleghi senza
+  bisogno di configurazione manuale su ciascuno.
 - **Icona nella system tray** (`filesync tray`, opzionale): sync
   automatica in background + blocco/sblocco vault dal menu con un click +
   notifica se un vault resta sbloccato troppo a lungo. Vedi sezione
@@ -60,7 +66,44 @@ chiavi master o i vault: usano solo `cryptography` (gia' richiesta) e la
 libreria standard di Python. Solo la GUI a icona (`filesync tray`, vedi
 sotto) richiede pacchetti extra, in `requirements-tray.txt`.
 
-## Uso rapido
+## Avvio rapido per i colleghi (senza editare file a mano)
+
+Questo e' il percorso pensato per installare filesync sul PC di un
+collega senza dover editare YAML, impostare variabili d'ambiente o
+lavorare da riga di comando:
+
+```bash
+pip install -r requirements.txt -r requirements-tray.txt
+python -m filesync tray -c config.yaml
+```
+
+Al primo avvio (o se `config.yaml` non esiste ancora) si apre subito una
+finestra dove si aggiungono i progetti scegliendo le cartelle con
+"Sfoglia...", senza toccare nessun file: **Aggiungi vault locale**
+(protegge una cartella con `lock`/`unlock`, vedi sotto) o **Aggiungi
+backup su server** (sync verso una cartella di rete, con cifratura
+opzionale). Le password inserite li' vengono salvate nel gestore di
+credenziali del sistema operativo (Windows Credential Manager / Keychain
+/ Secret Service) tramite `keyring`, **mai** nel file di configurazione:
+non serve piu' `password_env` ne' variabili d'ambiente per l'uso normale.
+
+Da quel momento resta un'icona nella system tray con tutto il necessario
+nel menu (sync manuale, blocca/sblocca vault, riapri "Gestisci
+progetti..." per aggiungerne altri o rimuoverne). Puoi riaprire la stessa
+finestra in qualsiasi momento anche senza la tray:
+
+```bash
+python -m filesync setup -c config.yaml
+```
+
+(richiede solo `keyring`, non `pystray`/`Pillow`: se non vuoi l'icona in
+tray ma solo configurare/usare da riga di comando puoi installare solo
+quello: `pip install keyring`)
+
+## Uso rapido da riga di comando (avanzato / scripting)
+
+Per automazione, scheduler (Task Scheduler/cron) o chi preferisce
+editare `config.yaml` a mano, resta disponibile il percorso classico:
 
 ```bash
 cp config.example.yaml config.yaml   # poi modifica sorgenti/destinazioni
@@ -69,6 +112,10 @@ python -m filesync sync -c config.yaml --watch     # in continuo (ogni 60s)
 python -m filesync sync -c config.yaml --dry-run   # prova senza modificare nulla
 python -m filesync sync -c config.yaml --job PLC   # solo un progetto
 ```
+
+Con `password_env`, come descritto nelle sezioni successive, se preferisci
+gestire le password tramite variabili d'ambiente invece del gestore
+credenziali del sistema (es. per l'uso su uno scheduler/server).
 
 ## Piu' cartelle contemporaneamente
 
@@ -373,11 +420,15 @@ di solito si blocca/sblocca poche volte al giorno, non in continuo.
 Per non dover lanciare i comandi a mano ogni volta, `filesync tray` mette
 un'icona nella barra delle applicazioni che:
 
+- al primo avvio (o con "Gestisci progetti...") apre la finestra per
+  aggiungere/rimuovere progetti scegliendo le cartelle con "Sfoglia...",
+  senza editare `config.yaml` a mano (vedi "Avvio rapido per i colleghi"
+  piu' sopra);
 - sincronizza automaticamente i job in background (come `sync --watch`,
   ma senza tenere un terminale aperto);
 - mostra nel menu i vault configurati con un'unica voce **Blocca/Sblocca**
-  per ciascuno — click, inserisci la password (o la legge da una
-  variabile d'ambiente se configurata), fatto;
+  per ciascuno — click, inserisci la password (o la legge dal gestore
+  credenziali del sistema se l'hai salvata dalla GUI), fatto;
 - avvisa con una notifica se un vault resta sbloccato per piu' di
   `warn_after_minutes` (default 30), ripetendo il promemoria finche' non
   lo blocchi — pensato esattamente per il caso "mi allontano dal PC e me

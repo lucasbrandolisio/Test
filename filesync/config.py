@@ -23,24 +23,28 @@ class Job:
     keep_versions: int = 5
 
     def resolve_password(self) -> Optional[str]:
-        """Legge la password di cifratura da una variabile d'ambiente.
-
-        La password non va mai scritta in chiaro nel file di configurazione.
+        """Trova la password di cifratura: prima in 'password_env' (uso
+        avanzato/script), altrimenti nel gestore credenziali del sistema
+        (dove la salva la GUI di configurazione). La password non va mai
+        scritta in chiaro nel file di configurazione.
         """
         if not self.encrypt:
             return None
-        if not self.password_env:
-            raise ValueError(
-                f"Job '{self.name}': 'encrypt: true' richiede 'password_env' "
-                "(nome della variabile d'ambiente che contiene la password)."
-            )
-        password = os.environ.get(self.password_env)
-        if not password:
-            raise ValueError(
-                f"Job '{self.name}': variabile d'ambiente '{self.password_env}' "
-                "non impostata o vuota."
-            )
-        return password
+        if self.password_env:
+            password = os.environ.get(self.password_env)
+            if password:
+                return password
+        from . import secrets_store  # import lazy: non serve alla CLI base
+
+        password = secrets_store.get_password(f"job:{self.name}")
+        if password:
+            return password
+
+        env_hint = f"la variabile d'ambiente '{self.password_env}' o " if self.password_env else ""
+        raise ValueError(
+            f"Job '{self.name}': nessuna password trovata (controllati {env_hint}"
+            "il gestore credenziali del sistema). Configurala di nuovo con 'filesync setup'."
+        )
 
 
 @dataclass
@@ -52,14 +56,19 @@ class Vault:
     warn_after_minutes: int = 30
 
     def resolve_password(self) -> Optional[str]:
-        """Legge la password dalla variabile d'ambiente, se configurata.
-
-        Puo' essere None: in quel caso chi usa il vault (es. la tray app)
-        dovra' chiederla interattivamente.
+        """Trova la password: prima 'password_env' (uso avanzato), poi il
+        gestore credenziali del sistema (dove la salva la GUI). Puo'
+        ritornare None: in quel caso chi usa il vault (CLI o tray) la
+        chiedera' interattivamente.
         """
-        if not self.password_env:
-            return None
-        return os.environ.get(self.password_env) or None
+        if self.password_env:
+            password = os.environ.get(self.password_env)
+            if password:
+                return password
+
+        from . import secrets_store  # import lazy: non serve alla CLI base
+
+        return secrets_store.get_password(f"vault:{self.name}")
 
 
 def _read_yaml(config_path: str) -> dict:
@@ -117,3 +126,47 @@ def load_vaults(config_path: str) -> List[Vault]:
             raise ValueError(f"Vault malformato in '{config_path}': manca il campo {exc}.") from exc
 
     return vaults
+
+
+def _job_to_dict(job: Job) -> dict:
+    entry = {"name": job.name, "source": job.source, "destination": job.destination}
+    if job.mirror:
+        entry["mirror"] = job.mirror
+    if job.exclude:
+        entry["exclude"] = job.exclude
+    if job.encrypt:
+        entry["encrypt"] = job.encrypt
+    if job.password_env:
+        entry["password_env"] = job.password_env
+    if job.master_public_key:
+        entry["master_public_key"] = job.master_public_key
+    if job.recovery_email:
+        entry["recovery_email"] = job.recovery_email
+    if job.keep_versions != 5:
+        entry["keep_versions"] = job.keep_versions
+    return entry
+
+
+def _vault_to_dict(vault: Vault) -> dict:
+    entry = {"name": vault.name, "workspace": vault.workspace, "vault": vault.vault}
+    if vault.password_env:
+        entry["password_env"] = vault.password_env
+    if vault.warn_after_minutes != 30:
+        entry["warn_after_minutes"] = vault.warn_after_minutes
+    return entry
+
+
+def save_jobs(config_path: str, jobs: List[Job]) -> None:
+    """Sovrascrive la sezione 'jobs:' del config, preservando 'vaults:' se presente."""
+    raw = _read_yaml(config_path) if os.path.exists(config_path) else {}
+    raw["jobs"] = [_job_to_dict(j) for j in jobs]
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
+
+
+def save_vaults(config_path: str, vaults: List[Vault]) -> None:
+    """Sovrascrive la sezione 'vaults:' del config, preservando 'jobs:' se presente."""
+    raw = _read_yaml(config_path) if os.path.exists(config_path) else {}
+    raw["vaults"] = [_vault_to_dict(v) for v in vaults]
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
