@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 config.yaml
+*.pem
+master_keys/
+keys/
 *.egg-info/
 .venv/
 venv/

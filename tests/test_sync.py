@@ -50,7 +50,9 @@ def test_updates_modified_file(tmp_path):
     assert (dst / "a.txt").read_text() == "hello world"
 
 
-def test_mirror_deletes_removed_files(tmp_path):
+def test_mirror_archives_removed_files_instead_of_deleting(tmp_path):
+    """Con mirror=True i file rimossi dalla sorgente non vengono mai cancellati:
+    finiscono spostati in .filesync_trash, sempre recuperabili."""
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     _write(src / "a.txt", "hello")
@@ -60,9 +62,13 @@ def test_mirror_deletes_removed_files(tmp_path):
     os.remove(src / "b.txt")
     result = sync_directory(str(src), str(dst), mirror=True)
 
-    assert result.deleted == ["b.txt"]
-    assert not (dst / "b.txt").exists()
+    assert result.archived == ["b.txt"]
+    assert not (dst / "b.txt").exists()  # non e' piu' nella posizione "attiva"...
     assert (dst / "a.txt").exists()
+
+    trashed = list((dst / ".filesync_trash").rglob("b.txt"))
+    assert len(trashed) == 1
+    assert trashed[0].read_text() == "world"  # ...ma il contenuto e' ancora recuperabile
 
 
 def test_non_mirror_keeps_removed_files(tmp_path):
@@ -75,7 +81,7 @@ def test_non_mirror_keeps_removed_files(tmp_path):
     os.remove(src / "b.txt")
     result = sync_directory(str(src), str(dst), mirror=False)
 
-    assert result.deleted == []
+    assert result.archived == []
     assert (dst / "b.txt").exists()
 
 

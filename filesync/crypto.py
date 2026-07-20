@@ -53,6 +53,37 @@ def make_cipher(password: str, salt_root_dir: str) -> Fernet:
     return Fernet(derive_key(password, salt))
 
 
+def generate_dek() -> bytes:
+    """Genera una nuova Data Encryption Key (chiave Fernet a 32 byte)."""
+    return Fernet.generate_key()
+
+
+def pbkdf2_wrap_dek(dek: bytes, passphrase: str) -> dict:
+    """Cifra (wrappa) una DEK con una chiave derivata da una password/passphrase.
+
+    Usato per proteggere la DEK sia con la password personale sia con la
+    chiave di recovery: stesso meccanismo, passphrase diversa.
+    """
+    salt = os.urandom(16)
+    key = derive_key(passphrase, salt)
+    token = Fernet(key).encrypt(dek)
+    return {
+        "method": "pbkdf2",
+        "salt": base64.b64encode(salt).decode("ascii"),
+        "token": base64.b64encode(token).decode("ascii"),
+    }
+
+
+def pbkdf2_unwrap_dek(wrap: dict, passphrase: str) -> bytes:
+    salt = base64.b64decode(wrap["salt"])
+    token = base64.b64decode(wrap["token"])
+    key = derive_key(passphrase, salt)
+    try:
+        return Fernet(key).decrypt(token)
+    except InvalidToken as exc:
+        raise DecryptionError("Password o chiave di recovery errata.") from exc
+
+
 def encrypt_bytes(cipher: Fernet, data: bytes) -> bytes:
     return cipher.encrypt(data)
 

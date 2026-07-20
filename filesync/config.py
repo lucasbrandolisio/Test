@@ -18,6 +18,8 @@ class Job:
     exclude: List[str] = field(default_factory=list)
     encrypt: bool = False
     password_env: Optional[str] = None
+    master_public_key: Optional[str] = None
+    recovery_email: Optional[str] = None
 
     def resolve_password(self) -> Optional[str]:
         """Legge la password di cifratura da una variabile d'ambiente.
@@ -60,6 +62,8 @@ def load_jobs(config_path: str) -> List[Job]:
                     exclude=entry.get("exclude", []) or [],
                     encrypt=entry.get("encrypt", False),
                     password_env=entry.get("password_env"),
+                    master_public_key=entry.get("master_public_key"),
+                    recovery_email=entry.get("recovery_email"),
                 )
             )
         except KeyError as exc:

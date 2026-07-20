@@ -1,32 +1,57 @@
 # Esempio di configurazione per filesync.
 # Copia questo file in config.yaml e adattalo ai tuoi progetti.
 #
-# Ogni "job" definisce una coppia sorgente -> destinazione.
+# Ogni "job" definisce una coppia sorgente -> destinazione. Puoi mettere
+# tutti i job che vuoi nello stesso file: vengono sincronizzati IN PARALLELO
+# (vedi README, sezione "Piu' cartelle contemporaneamente").
+#
 # La destinazione puo' essere:
 #   - una cartella locale
 #   - un percorso di rete verso il server aziendale (es. \\SERVER\Backup\...)
 #   - una cartella condivisa VMware montata come percorso normale
 #     (es. su Linux guest: /mnt/hgfs/NomeCondivisione)
 #
-# Non mettere MAI la password in questo file: usa una variabile
-# d'ambiente (password_env) e impostala nel sistema operativo o
-# nello scheduler (Task Scheduler / cron) che lancia la sincronizzazione.
+# Non mettere MAI password nel file di configurazione: usa una variabile
+# d'ambiente (password_env) e impostala nel sistema operativo o nello
+# scheduler (Task Scheduler / cron) che lancia la sincronizzazione.
+#
+# IMPORTANTE su mirror: di default (mirror: false) filesync NON cancella
+# mai nulla dal backup, nemmeno se il file sparisce dalla sorgente: e' il
+# comportamento consigliato per un backup "vitale" come questo. Anche con
+# mirror: true, comunque, i file rimossi non vengono davvero cancellati ma
+# spostati in <destinazione>/.filesync_trash/<data>/ (vedi README).
 
 jobs:
-  - name: "ProgettoPLC1"
-    source: "/home/utente/Progetti/PLC1"
-    destination: "//SERVER/Backup/PLC1"
-    mirror: false          # true = elimina in destinazione i file rimossi dalla sorgente
+  - name: "PLC"
+    source: "/home/utente/Progetti/PLC"
+    destination: "//SERVER/Backup/PLC"
+    mirror: false
     exclude:
       - "*.tmp"
       - "~$*"
       - ".git"
-      - "__pycache__"
+    encrypt: true
+    password_env: "FILESYNC_PW_PLC"          # password personale di questo progetto
+    master_public_key: "./keys/master_public.pem"   # permette il recupero da parte dell'amministratore
+    recovery_email: "utente@azienda.it"      # riceve una chiave per l'auto-recupero (vedi README)
+
+  - name: "HMI"
+    source: "/home/utente/Progetti/HMI"
+    destination: "//SERVER/Backup/HMI"
+    mirror: false
+    encrypt: true
+    password_env: "FILESYNC_PW_HMI"
+    master_public_key: "./keys/master_public.pem"
+    recovery_email: "utente@azienda.it"
+
+  - name: "ScriptPython"
+    source: "/home/utente/Progetti/Python"
+    destination: "//SERVER/Backup/Python"
+    mirror: false
     encrypt: false
 
-  - name: "ProgettoPLC2-VMwareShared"
-    source: "/mnt/hgfs/SharedVM/PLC2"
-    destination: "//SERVER/Backup/PLC2"
-    mirror: true
-    encrypt: true
-    password_env: "FILESYNC_PASSWORD"   # variabile d'ambiente con la password di cifratura
+  - name: "ProgettoVMwareShared"
+    source: "/mnt/hgfs/SharedVM/Progetto"
+    destination: "//SERVER/Backup/ProgettoVM"
+    mirror: false
+    encrypt: false

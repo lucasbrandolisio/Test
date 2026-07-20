@@ -1,14 +1,18 @@
-"""CLI: python -m filesync <sync|encrypt|decrypt> ..."""
+"""CLI: python -m filesync <sync|encrypt|decrypt|master-keygen|recover|open> ..."""
 
 from __future__ import annotations
 
 import argparse
 import getpass
 import logging
+import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from . import crypto
+from cryptography.fernet import Fernet
+
+from . import crypto, envelope, keys
 from .config import load_jobs
 from .sync import run_job
 
@@ -20,6 +24,16 @@ def _configure_logging(verbose: bool) -> None:
     )
 
 
+def _run_one(job, dry_run: bool) -> bool:
+    """Esegue un job. Ritorna True se c'e' stato un errore."""
+    try:
+        run_job(job, dry_run=dry_run)
+        return False
+    except Exception as exc:  # noqa: BLE001 - un job che fallisce non deve fermare gli altri
+        logging.getLogger("filesync.cli").error("Job '%s' fallito: %s", job.name, exc)
+        return True
+
+
 def cmd_sync(args: argparse.Namespace) -> int:
     jobs = load_jobs(args.config)
     if args.job:
@@ -29,13 +43,17 @@ def cmd_sync(args: argparse.Namespace) -> int:
             return 1
 
     def run_all() -> bool:
+        if args.sequential or len(jobs) <= 1:
+            return any(_run_one(job, args.dry_run) for job in jobs)
+
+        # Piu' cartelle vengono sincronizzate in parallelo verso il server:
+        # l'operazione e' quasi tutta I/O (rete/disco), quindi i thread bastano.
         any_error = False
-        for job in jobs:
-            try:
-                run_job(job, dry_run=args.dry_run)
-            except Exception as exc:  # noqa: BLE001 - vogliamo continuare con gli altri job
-                logging.getLogger("filesync.cli").error("Job '%s' fallito: %s", job.name, exc)
-                any_error = True
+        max_workers = min(len(jobs), args.max_parallel)
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [pool.submit(_run_one, job, args.dry_run) for job in jobs]
+            for future in as_completed(futures):
+                any_error = future.result() or any_error
         return any_error
 
     if args.watch:
@@ -75,6 +93,77 @@ def cmd_decrypt(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_master_keygen(args: argparse.Namespace) -> int:
+    passphrase = args.passphrase or getpass.getpass(
+        "Passphrase per proteggere la chiave master (solo tu la devi conoscere): "
+    )
+    if not args.passphrase:
+        confirm = getpass.getpass("Conferma passphrase: ")
+        if confirm != passphrase:
+            print("Le passphrase non coincidono.", file=sys.stderr)
+            return 1
+
+    os.makedirs(args.out_dir, exist_ok=True)
+    private_path = os.path.join(args.out_dir, "master_private.pem")
+    public_path = os.path.join(args.out_dir, "master_public.pem")
+    if os.path.exists(private_path) or os.path.exists(public_path):
+        print(f"Errore: esistono gia' dei file in '{args.out_dir}'. Rimuovili o scegli un'altra cartella.", file=sys.stderr)
+        return 1
+
+    private_pem, public_pem = keys.generate_master_keypair(passphrase)
+    with open(private_path, "wb") as f:
+        f.write(private_pem)
+    with open(public_path, "wb") as f:
+        f.write(public_pem)
+
+    print(f"Creata coppia di chiavi master in '{args.out_dir}':")
+    print(f"  - {public_path}  (da distribuire ai colleghi/config, NON e' un segreto)")
+    print(f"  - {private_path}  (SOLO PER TE: conservala offline, es. su una chiavetta USB "
+          "in un cassetto, MAI su git o sul server di backup)")
+    print("Senza questo file + la passphrase nessuno puo' usare la chiave master, nemmeno tu se li perdi.")
+    return 0
+
+
+def cmd_recover(args: argparse.Namespace) -> int:
+    try:
+        if args.recovery_key:
+            dek = envelope.unwrap_dek_with_recovery_key(args.destination, args.recovery_key)
+            source_desc = "chiave di recovery"
+        else:
+            passphrase = args.master_passphrase or getpass.getpass("Passphrase della chiave master: ")
+            dek = envelope.unwrap_dek_with_master_key(args.destination, args.master_private_key, passphrase)
+            source_desc = "chiave master"
+    except (crypto.DecryptionError, FileNotFoundError) as exc:
+        print(f"Errore: {exc}", file=sys.stderr)
+        return 1
+
+    new_password = args.new_password or getpass.getpass("Nuova password personale per questo backup: ")
+    envelope.reset_user_password(args.destination, dek, new_password)
+    print(f"Accesso recuperato tramite {source_desc}. Password personale aggiornata per '{args.destination}'.")
+    print("Aggiorna anche la variabile d'ambiente / il secret usato da questo job con la nuova password.")
+    return 0
+
+
+def cmd_open(args: argparse.Namespace) -> int:
+    try:
+        if args.recovery_key:
+            dek = envelope.unwrap_dek_with_recovery_key(args.destination, args.recovery_key)
+        elif args.master_private_key:
+            passphrase = args.master_passphrase or getpass.getpass("Passphrase della chiave master: ")
+            dek = envelope.unwrap_dek_with_master_key(args.destination, args.master_private_key, passphrase)
+        else:
+            password = args.password or getpass.getpass("Password personale: ")
+            dek = envelope.unwrap_dek_with_password(args.destination, password)
+    except (crypto.DecryptionError, FileNotFoundError) as exc:
+        print(f"Errore: {exc}", file=sys.stderr)
+        return 1
+
+    cipher = Fernet(dek)
+    count = envelope.decrypt_all(args.destination, args.output, cipher)
+    print(f"Ripristinati {count} file in chiaro in '{args.output}'.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="filesync", description="Sincronizzazione cartelle con cifratura opzionale.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Log dettagliato")
@@ -86,19 +175,51 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--watch", action="store_true", help="Esegue in loop continuo")
     p_sync.add_argument("--interval", type=int, default=60, help="Secondi tra un ciclo e l'altro in modalita' --watch (default 60)")
     p_sync.add_argument("--dry-run", action="store_true", help="Mostra cosa verrebbe fatto senza modificare nulla")
+    p_sync.add_argument("--sequential", action="store_true", help="Esegue i job uno alla volta invece che in parallelo")
+    p_sync.add_argument("--max-parallel", type=int, default=4, help="Numero massimo di job eseguiti in parallelo (default 4)")
     p_sync.set_defaults(func=cmd_sync)
 
-    p_enc = sub.add_parser("encrypt", help="Cifra tutti i file di una cartella in un'altra")
+    p_enc = sub.add_parser("encrypt", help="Cifra tutti i file di una cartella in un'altra (uso manuale, solo password)")
     p_enc.add_argument("source", help="Cartella sorgente in chiaro")
     p_enc.add_argument("destination", help="Cartella di destinazione per i file cifrati")
     p_enc.add_argument("--password", help="Password (se omessa viene richiesta in modo sicuro)")
     p_enc.set_defaults(func=cmd_encrypt)
 
-    p_dec = sub.add_parser("decrypt", help="Decifra tutti i file di una cartella in un'altra")
+    p_dec = sub.add_parser("decrypt", help="Decifra tutti i file di una cartella in un'altra (uso manuale, solo password)")
     p_dec.add_argument("source", help="Cartella sorgente con i file cifrati (*.enc)")
     p_dec.add_argument("destination", help="Cartella di destinazione per i file decifrati")
     p_dec.add_argument("--password", help="Password (se omessa viene richiesta in modo sicuro)")
     p_dec.set_defaults(func=cmd_decrypt)
+
+    p_keygen = sub.add_parser("master-keygen", help="Genera la coppia di chiavi master (da fare UNA SOLA VOLTA, solo l'amministratore)")
+    p_keygen.add_argument("--out-dir", default="./master_keys", help="Cartella dove salvare le chiavi (default ./master_keys)")
+    p_keygen.add_argument("--passphrase", help="Passphrase della chiave privata (se omessa viene richiesta in modo sicuro)")
+    p_keygen.set_defaults(func=cmd_master_keygen)
+
+    p_recover = sub.add_parser(
+        "recover",
+        help="Recupera l'accesso a un job cifrato (password dimenticata) impostando una nuova password personale",
+    )
+    p_recover.add_argument("destination", help="Cartella di destinazione del job cifrato (sul server)")
+    p_recover.add_argument("--new-password", help="Nuova password personale (se omessa viene richiesta in modo sicuro)")
+    group = p_recover.add_mutually_exclusive_group(required=True)
+    group.add_argument("--recovery-key", help="Chiave di recovery ricevuta via email (uso normale)")
+    group.add_argument("--master-private-key", help="Percorso di master_private.pem (solo amministratore)")
+    p_recover.add_argument("--master-passphrase", help="Passphrase della chiave master (se serve --master-private-key)")
+    p_recover.set_defaults(func=cmd_recover)
+
+    p_open = sub.add_parser(
+        "open",
+        help="Decifra l'intero backup cifrato di un job in una cartella in chiaro (es. ripristino dopo un guasto)",
+    )
+    p_open.add_argument("destination", help="Cartella di destinazione del job cifrato (sul server)")
+    p_open.add_argument("output", help="Cartella dove scrivere i file ripristinati in chiaro")
+    auth_group = p_open.add_mutually_exclusive_group()
+    auth_group.add_argument("--password", help="Password personale (default: la richiede in modo sicuro)")
+    auth_group.add_argument("--recovery-key", help="Usa la chiave di recovery ricevuta via email")
+    auth_group.add_argument("--master-private-key", help="Usa la chiave master (solo amministratore)")
+    p_open.add_argument("--master-passphrase", help="Passphrase della chiave master (se usi --master-private-key)")
+    p_open.set_defaults(func=cmd_open)
 
     return parser
 

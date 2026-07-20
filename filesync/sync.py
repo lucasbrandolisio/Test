@@ -10,6 +10,7 @@ Per questo motivo non serve nessuna integrazione speciale: basta puntare
 
 from __future__ import annotations
 
+import datetime
 import fnmatch
 import json
 import logging
@@ -18,23 +19,30 @@ import shutil
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from . import crypto
+from cryptography.fernet import Fernet
+
+from . import crypto, envelope, keys, mailer
 from .config import Job
 
 logger = logging.getLogger("filesync.sync")
 
 META_SUFFIX = ".meta.json"
+TRASH_DIR = ".filesync_trash"
+
+# Cartelle "tecniche" dentro la destinazione che la sync non deve mai
+# considerare file dell'utente ne' toccare durante la pulizia mirror.
+RESERVED_DEST_DIRS = {TRASH_DIR, envelope.ENVELOPE_DIR}
 
 
 @dataclass
 class SyncResult:
     copied: List[str] = field(default_factory=list)
-    deleted: List[str] = field(default_factory=list)
+    archived: List[str] = field(default_factory=list)
     skipped: int = 0
 
     @property
     def changed(self) -> bool:
-        return bool(self.copied or self.deleted)
+        return bool(self.copied or self.archived)
 
 
 def _is_excluded(rel_path: str, patterns: List[str]) -> bool:
@@ -74,11 +82,15 @@ def sync_directory(
     """Sincronizza source -> destination.
 
     - Copia i file nuovi o modificati (confronto su dimensione e mtime).
-    - Se mirror=True, elimina in destination i file non piu' presenti in source.
-    - Se cipher e' fornito (oggetto Fernet, vedi crypto.make_cipher), i file
-      vengono cifrati in destinazione con suffisso '.enc' e viene mantenuto
-      un piccolo sidecar '.meta.json' con dimensione/mtime originali, usato
-      per rilevare le modifiche senza dover decifrare nulla.
+    - Se mirror=True, i file non piu' presenti in source vengono SPOSTATI
+      (mai cancellati) in '<destination>/.filesync_trash/<timestamp>/...',
+      cosi' anche in caso di rinomina/cancellazione accidentale nulla va
+      mai perso dal backup. Con mirror=False (default) i file rimossi dalla
+      sorgente restano semplicemente dove sono in destinazione.
+    - Se cipher e' fornito (oggetto Fernet), i file vengono cifrati in
+      destinazione con suffisso '.enc' e viene mantenuto un piccolo sidecar
+      '.meta.json' con dimensione/mtime originali, usato per rilevare le
+      modifiche senza dover decifrare nulla.
     """
     exclude = exclude or []
     result = SyncResult()
@@ -144,16 +156,22 @@ def sync_directory(
                 result.skipped += 1
 
     if mirror:
-        for dirpath, _dirnames, filenames in os.walk(destination):
+        expected_norm = {p.replace(os.sep, "/") for p in expected_dest_files}
+        run_ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+
+        for dirpath, dirnames, filenames in os.walk(destination):
+            rel_dir = os.path.relpath(dirpath, destination)
+            if rel_dir == ".":
+                dirnames[:] = [d for d in dirnames if d not in RESERVED_DEST_DIRS]
             for filename in filenames:
+                if rel_dir == "." and filename == crypto.SALT_FILENAME:
+                    continue
                 dest_full = os.path.join(dirpath, filename)
                 rel_dest = os.path.relpath(dest_full, destination)
-                if rel_dest == crypto.SALT_FILENAME:
-                    continue
-                if rel_dest.replace(os.sep, "/") not in {p.replace(os.sep, "/") for p in expected_dest_files}:
-                    result.deleted.append(rel_dest)
+                if rel_dest.replace(os.sep, "/") not in expected_norm:
+                    result.archived.append(rel_dest)
                     if not dry_run:
-                        os.remove(dest_full)
+                        _move_to_trash(destination, rel_dest, run_ts)
 
         if not dry_run:
             _prune_empty_dirs(destination)
@@ -161,20 +179,61 @@ def sync_directory(
     return result
 
 
+def _move_to_trash(destination: str, rel_path: str, run_ts: str) -> None:
+    src = os.path.join(destination, rel_path)
+    dst = os.path.join(destination, TRASH_DIR, run_ts, rel_path)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.move(src, dst)
+
+
 def _prune_empty_dirs(root: str) -> None:
     for dirpath, dirnames, filenames in os.walk(root, topdown=False):
         if dirpath == root:
+            continue
+        rel_dir = os.path.relpath(dirpath, root)
+        if rel_dir.replace(os.sep, "/").split("/")[0] in RESERVED_DEST_DIRS:
             continue
         if not dirnames and not filenames:
             os.rmdir(dirpath)
 
 
+def _get_or_create_cipher(job: Job):
+    """Ottiene il cipher del job leggendo l'envelope esistente, oppure ne crea uno nuovo al primo utilizzo."""
+    password = job.resolve_password()
+    os.makedirs(job.destination, exist_ok=True)
+
+    if envelope.envelope_exists(job.destination):
+        return envelope.open_cipher_with_password(job.destination, password)
+
+    logger.info(
+        "Job '%s': nessuna configurazione di cifratura trovata in '%s', la creo ora.",
+        job.name, job.destination,
+    )
+    recovery_key = keys.generate_recovery_key() if job.recovery_email else None
+    dek = envelope.create_envelope(
+        job.destination,
+        job.name,
+        password,
+        master_public_key_path=job.master_public_key,
+        recovery_key=recovery_key,
+    )
+
+    if recovery_key and job.recovery_email:
+        try:
+            mailer.send_recovery_email(job.recovery_email, job.name, job.destination, recovery_key)
+            logger.info("Job '%s': email con la chiave di recovery inviata a %s.", job.name, job.recovery_email)
+        except Exception as exc:  # noqa: BLE001 - non deve bloccare la sync, ma va segnalato forte
+            logger.error(
+                "Job '%s': invio email di recovery fallito (%s). CONSERVA SUBITO questa chiave "
+                "in un posto sicuro, non potra' essere recuperata di nuovo: %s",
+                job.name, exc, recovery_key,
+            )
+
+    return Fernet(dek)
+
+
 def run_job(job: Job, dry_run: bool = False) -> SyncResult:
-    cipher = None
-    if job.encrypt:
-        password = job.resolve_password()
-        os.makedirs(job.destination, exist_ok=True)
-        cipher = crypto.make_cipher(password, job.destination)
+    cipher = _get_or_create_cipher(job) if job.encrypt else None
 
     logger.info("Sync job '%s': %s -> %s", job.name, job.source, job.destination)
     result = sync_directory(
@@ -186,7 +245,7 @@ def run_job(job: Job, dry_run: bool = False) -> SyncResult:
         dry_run=dry_run,
     )
     logger.info(
-        "Job '%s': %d copiati, %d eliminati, %d invariati",
-        job.name, len(result.copied), len(result.deleted), result.skipped,
+        "Job '%s': %d copiati, %d archiviati nel cestino, %d invariati",
+        job.name, len(result.copied), len(result.archived), result.skipped,
     )
     return result
